@@ -112,19 +112,22 @@ def negSamplingLossAndGradient(
     ### YOUR CODE HERE
 
     ### Please use your implementation of sigmoid in here.
-    u_o = outsideVectors[outsideWordIdx]
-    u_k = outsideVectors[negSampleWordIndices]
+    k = negSampleWordIndices
+    o = outsideWordIdx
+
+    u_o = outsideVectors[o]
+    u_k = outsideVectors[k]
+    v_c = centerWordVec
     
-    sig_o = sigmoid(u_o.T.dot(centerWordVec))
-    sig_k = sigmoid(-u_k.dot(centerWordVec))
+    sig_o = sigmoid(u_o.T.dot(v_c))
+    sig_k = sigmoid(-u_k.dot(v_c))
 
     loss = -np.log(sig_o) - np.sum(np.log(sig_k))
-    gradCenterVec = -u_o*(1-sig_o) + np.sum(u_k*(1-sig_k)[:,np.newaxis], axis=0)
+    gradCenterVec = -u_o*(1-sig_o) + np.sum(u_k*(1-sig_k)[:, np.newaxis], axis=0)
     
     gradOutsideVecs = np.zeros_like(outsideVectors)
-    gradOutsideVecs[outsideWordIdx] = -centerWordVec*(1-sig_o)
-    for i, neg in enumerate(negSampleWordIndices):
-        gradOutsideVecs[neg] += (1-sig_k[i])*centerWordVec
+    gradOutsideVecs[outsideWordIdx] = -v_c*(1-sig_o)
+    np.add.at(gradOutsideVecs, k, (1-sig_k)[:, np.newaxis]*v_c)
 
     ### END YOUR CODE
 
@@ -167,12 +170,13 @@ def skipgram(currentCenterWord, windowSize, outsideWords, word2Ind,
     gradOutsideVectors = np.zeros(outsideVectors.shape)
 
     ### YOUR CODE HERE
-    v_c = centerWordVectors[word2Ind[currentCenterWord]]
+    c = word2Ind[currentCenterWord]
+    v_c = centerWordVectors[c]
     for w in outsideWords:
         o = word2Ind[w]
         l, gc, go = word2vecLossAndGradient(v_c, o, outsideVectors, dataset)
         loss += l
-        gradCenterVecs[word2Ind[currentCenterWord]] += gc
+        gradCenterVecs[c] += gc
         gradOutsideVectors += go
 
     ### END YOUR CODE
