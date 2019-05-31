@@ -307,6 +307,7 @@ class NMT(nn.Module):
         ###     Tensor Squeeze:
         ###         https://pytorch.org/docs/stable/torch.html#torch.squeeze
         dec_hidden, dec_cell = self.decoder(Ybar_t, dec_state)
+        # a = b x (1 x h); b = b x (h x t). c = b x (1 x t)
         e_t = torch.bmm(dec_hidden.unsqueeze(1), enc_hiddens_proj.transpose(1,2)).squeeze(1)
 
         ### END YOUR CODE
@@ -343,6 +344,7 @@ class NMT(nn.Module):
         ###     Tanh:
         ###         https://pytorch.org/docs/stable/torch.html#torch.tanh
         alpha_t = F.softmax(e_t, dim=1)
+        # a = b x (1 x t); b = b x (t x 2*h). c = b x (1 x 2*h)
         a_t = torch.bmm(alpha_t.unsqueeze(1), enc_hiddens).squeeze(1)
         U_t = torch.cat((a_t, dec_hidden), dim=1)
         V_t = self.combined_output_projection(U_t)
