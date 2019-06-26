@@ -140,6 +140,111 @@ class RNNEncoder(nn.Module):
         return x
 
 
+def self_attention(query, key, value, mask=None):
+    """
+    :param query: Query tensor (batch x heads x seq_len x d_k)
+    :param key: Key tensor (batch x heads x seq_len x d_k)
+    :param value: Value tensor (batch x heads x seq_len x d_k)
+    :param mask: Optional mask, same for all heads (batch x heads x seq_len x seq_len)
+    :return: output, scores (batch x heads x seq_len x d_k), (batch x heads x seq_len x seq_len)
+    """
+    logits = torch.bmm(query, key.transpose(-1, -2))/torch.sqrt(key.shape[-1])
+    if mask is not None:
+        logits = logits.masked_fill(mask==0, 1e-9)
+    scores = F.softmax(logits, dim=-1)
+    return torch.bmm(scores, value), scores
+
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self, heads, hidden_size, drop_prob=0.):
+        """
+        :param heads: Number of attention heads to use
+        :param hidden_size: Dimension of input/output vectors
+        :param drop_prob: Dropout rate
+        """
+        super(MultiHeadSelfAttention, self).__init__()
+
+        assert hidden_size % heads == 0, "hidden_size not a multiple of heads"
+
+        self.d_k = hidden_size / heads
+        self.heads = heads
+        self.Linears = nn.ModuleList([nn.Linear(hidden_size, hidden_size) for _ in range(4)])
+        self.attn = None
+        self.dropout = nn.Dropout(p=drop_prob)
+
+    def forward(self, q, k, v, mask=None):
+        """
+        :param q: Query tensor (batch_size x seq_len x hidden_size)
+        :param k: Key tensor (batch_size x seq_len x hidden_size)
+        :param v: Value tensor (batch_size x seq_len x hidden_size)
+        :param mask: Optional mask (batch_size x seq_len x seq_len)
+        :return: o: output tensor (batch_size x seq_len x hidden_size)
+        """
+        batch_size = q.shape[0]
+
+        if mask is not None:
+            mask = mask.unsqueeze(1)  # (batch_size x 1 x seq_len x seq_len)
+
+        # Get the Q, K, V in multiple-heads form after linear layers
+        q, k, v = [l(x).view(batch_size, -1, self.heads, self.d_k) for l, x in zip(self.Linears, (q, k, v))]
+
+        o, self.attn = self_attention(q, k, v, mask)
+        o = self.dropout(o).transpose(1, 2).view(batch_size, -1, self.heads*self.d_k)
+
+        return self.Linears[-1](o)
+
+
+class FeedForward(nn.Module):
+    def __init__(self, hidden_size, inter_size, drop_prob=0.):
+        """
+        :param hidden_size: Dimension of input/output vectors
+        :param inter_size: Dimension of intermediate vectors
+        :param drop_prob: Dropout rate
+        """
+        super(FeedForward, self).__init__()
+        self.FF = nn.Sequential(
+            nn.Linear(hidden_size, inter_size),
+            nn.ReLU(),
+            nn.Dropout(p=drop_prob),
+            nn.Linear(inter_size, hidden_size)
+        )
+
+    def forward(self, x):
+        return self.FF(x)
+
+
+class Sublayer(nn.Module):
+    def __init__(self, size, drop_prob=0.):
+        """
+        :param size: Size of input to Layernorm
+        :param drop_prob: Dropout rate
+        """
+        super(Sublayer, self).__init__()
+        self.norm = nn.LayerNorm(size)
+        self.dropout = nn.Dropout(p=drop_prob)
+
+    def forward(self, x, sub):
+        """
+        :param x: Input (batch x seq_len x hidden_size)
+        :param sub: Sublayer (Feedforward, MultiHeadSelfAttention etc.)
+        :return: Normalize, Sublayer, Dropout then Residual
+        """
+        return x + self.dropout(sub(self.norm(x)))
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(self, heads, hidden_size, inter_size, seq_len, drop_prob=0.):
+        super(TransformerEncoder, self).__init__()
+        self.MHSA = MultiHeadSelfAttention(heads, hidden_size, drop_prob)
+        self.FF = FeedForward(hidden_size, inter_size, drop_prob)
+        self.layers = nn.ModuleList([Sublayer((seq_len, hidden_size), drop_prob) for _ in range(2)])
+
+    def forward(self, x, lengths):
+        mask = lengths  # TODO: Change pads to masks
+        x = self.layers[0](x, lambda x: self.MHSA(x, x, x, mask))  # Need lambda due to mask
+        return self.layers[1](x, self.FF)
+
+
 class BiDAFAttention(nn.Module):
     """Bidirectional attention originally used by BiDAF.
 
