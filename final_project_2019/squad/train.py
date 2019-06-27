@@ -100,18 +100,20 @@ def main(args):
         with torch.enable_grad(), \
                 tqdm(total=len(train_loader.dataset)) as progress_bar:
             for cw_idxs, cc_idxs, qw_idxs, qc_idxs, y1, y2, ids in train_loader:
+
                 # Setup for forward
                 optimizer.zero_grad()
                 batch_size = cw_idxs.size(0)
 
                 if args.use_char:
-                    cc_idxs = cc_idxs.to(device)  # (batch, cont_len, char_limit)
+                    cc_idxs = cc_idxs.to(device)  # (batch, c_limit, char_limit)
                     qc_idxs = qc_idxs.to(device)
 
-                cw_idxs = cw_idxs.to(device)  # (batch, cont_len)
+                cw_idxs = cw_idxs.to(device)  # (batch, c_limit)
                 qw_idxs = qw_idxs.to(device)
 
                 c_idxs, q_idxs = (cw_idxs, cc_idxs), (qw_idxs, qc_idxs)
+
                 # Forward
                 log_p1, log_p2 = model(c_idxs, q_idxs)
 
@@ -178,6 +180,7 @@ def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2, use_c
     with torch.no_grad(), \
             tqdm(total=len(data_loader.dataset)) as progress_bar:
         for cw_idxs, cc_idxs, qw_idxs, qc_idxs, y1, y2, ids in data_loader:
+
             # Setup for forward
             cw_idxs = cw_idxs.to(device)
             qw_idxs = qw_idxs.to(device)
@@ -191,6 +194,7 @@ def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2, use_c
             qw_idxs = qw_idxs.to(device)
 
             c_idxs, q_idxs = (cw_idxs, cc_idxs), (qw_idxs, qc_idxs)
+
             # Forward
             log_p1, log_p2 = model(c_idxs, q_idxs)
 

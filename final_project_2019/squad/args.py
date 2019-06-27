@@ -107,7 +107,7 @@ def get_train_args():
                         help='Number of epochs for which to train. Negative means forever.')
     parser.add_argument('--drop_prob',
                         type=float,
-                        default=0.2,
+                        default=0.2,  # TODO: Transformer uses 0.1
                         help='Probability of zeroing an activation in dropout layers.')
     parser.add_argument('--metric_name',
                         type=str,
@@ -202,6 +202,7 @@ def add_common_args(parser):
                         default=16,
                         help='Max number of chars to keep from a word')
 
+
 def add_train_test_args(parser):
     """Add arguments common to train.py and test.py"""
     parser.add_argument('--name',
@@ -241,7 +242,9 @@ def add_train_test_args(parser):
                         type=str,
                         default=None,
                         help='Path to load as a model checkpoint.')
-
     parser.add_argument('--use_char',
                         action='store_true',
                         help='To use character embeddings to get word embeddings or not.')
+    parser.add_argument('--use_transformer',
+                        action='store_true',
+                        help='To use Transformer Encoders or not.')

@@ -29,9 +29,10 @@ class BiDAF(nn.Module):
         hidden_size (int): Number of features in the hidden state at each layer.
         drop_prob (float): Dropout probability.
     """
-    def __init__(self, vectors, hidden_size, drop_prob=0., use_char=False, **kwargs):
+    def __init__(self, vectors, hidden_size, drop_prob=0., use_char=False, use_transformer=False, **kwargs):
         super(BiDAF, self).__init__()
         self.use_char = use_char
+        self.use_transformer = use_transformer
         self.hidden_size = hidden_size
 
         if not use_char:
@@ -45,48 +46,89 @@ class BiDAF(nn.Module):
                                                  hidden_size=hidden_size,
                                                  drop_prob=drop_prob,
                                                  char_limit=kwargs['char_limit'])
-
-        self.enc = layers.RNNEncoder(input_size=hidden_size,
-                                     hidden_size=hidden_size,
-                                     num_layers=1,
-                                     drop_prob=drop_prob)
-
-        self.att = layers.BiDAFAttention(hidden_size=2 * hidden_size,
+        if not use_transformer:
+            self.enc = layers.RNNEncoder(input_size=hidden_size,
+                                         hidden_size=hidden_size,  # output = 2*hidden_size
+                                         num_layers=1,
                                          drop_prob=drop_prob)
+            self.mod = layers.RNNEncoder(input_size=8 * hidden_size,
+                                         hidden_size=hidden_size,  # output = 2*hidden_size
+                                         num_layers=2,
+                                         drop_prob=drop_prob)
+            self.out = layers.BiDAFOutput(hidden_size=2*hidden_size, drop_prob=drop_prob, use_transformer=use_transformer)
 
-        self.mod = layers.RNNEncoder(input_size=8 * hidden_size,
-                                     hidden_size=hidden_size,
-                                     num_layers=2,
-                                     drop_prob=drop_prob)
+        else:
+            self.c_limit = kwargs['c_limit']
+            self.q_limit = kwargs['q_limit']
+            self.heads = kwargs['heads']
+            self.inter_size = kwargs['inter_size']
 
-        self.out = layers.BiDAFOutput(hidden_size=hidden_size,
-                                      drop_prob=drop_prob)
+            self.c_enc = layers.TransformerEncoder(
+                heads=self.heads,
+                input_size=hidden_size,
+                output_size=hidden_size,
+                inter_size=self.inter_size,
+                seq_len=self.c_limit,
+                drop_prob=drop_prob
+            )
+            self.q_enc = layers.TransformerEncoder(
+                heads=self.heads,
+                input_size=hidden_size,
+                output_size=hidden_size,
+                inter_size=self.inter_size,
+                seq_len=self.q_limit,
+                drop_prob=drop_prob
+            )
+            self.mod = layers.TransformerEncoder(
+                heads=self.heads,
+                input_size=4*hidden_size,
+                output_size=hidden_size,
+                inter_size=self.inter_size,
+                seq_len=self.c_limit,
+                drop_prob=drop_prob
+            )
+            self.out = layers.BiDAFOutput(hidden_size=hidden_size, drop_prob=drop_prob, use_transformer=use_transformer,
+                                          c_limit=self.c_limit, heads=self.heads, inter_size=self.inter_size)
+
+        self.att = layers.BiDAFAttention(hidden_size=(2*hidden_size if not self.use_transformer else hidden_size),
+                                         drop_prob=drop_prob)  # (batch_size, seq_len, 4*input_hidden_size)
 
     def forward(self, c_idxs, q_idxs):
-        cw_idxs, cc_idxs = c_idxs  # cc_idxs (batch_size, c_len, char_limit)
-        qw_idxs, qc_idxs = q_idxs  # qc_idxs (batch_size, q_len, char_limit)
-        c_mask = torch.zeros_like(cw_idxs) != cw_idxs
+        """
+        :param c_idxs: A tuple of word and char indices for the context.
+        :param q_idxs: A tuple of word and char indices for the question.
+        :return:
+        """
+        cw_idxs, cc_idxs = c_idxs  # cc_idxs (batch_size, c_limit, char_limit)
+        qw_idxs, qc_idxs = q_idxs  # qc_idxs (batch_size, q_limit, char_limit)
+        c_mask = torch.zeros_like(cw_idxs) != cw_idxs  # c_mask, cw_idxs (batch_size, c_limit)
         q_mask = torch.zeros_like(qw_idxs) != qw_idxs
-        c_len, q_len = c_mask.sum(-1), q_mask.sum(-1)
-        len_c, len_q = cc_idxs.shape[1], qc_idxs.shape[1]
+        c_len, q_len = c_mask.sum(-1), q_mask.sum(-1)  # (batch_size) Actual length
+        c_limit, q_limit = cc_idxs.shape[1], qc_idxs.shape[1]
 
         if self.use_char:
-            cc_idxs = cc_idxs.view(-1, self.char_limit)  # (batch_size*c_len, char_limit)
-            qc_idxs = qc_idxs.view(-1, self.char_limit)  # (batch_size*q_len, char_limit)
-            c_emb = self.emb(cc_idxs).view(-1, len_c, self.hidden_size)         # (batch_size, c_len, hidden_size)
-            q_emb = self.emb(qc_idxs).view(-1, len_q, self.hidden_size)         # (batch_size, q_len, hidden_size)
+            cc_idxs = cc_idxs.view(-1, self.char_limit)  # (batch_size*c_limit, char_limit)
+            qc_idxs = qc_idxs.view(-1, self.char_limit)  # (batch_size*q_limit, char_limit)
+            c_emb = self.emb(cc_idxs).view(-1, c_limit, self.hidden_size)  # (batch_size, c_limit, hidden_size)
+            q_emb = self.emb(qc_idxs).view(-1, q_limit, self.hidden_size)  # (batch_size, q_limit, hidden_size)
         else:
-            c_emb = self.emb(cw_idxs)         # (batch_size, c_len, hidden_size)
-            q_emb = self.emb(qw_idxs)         # (batch_size, q_len, hidden_size)
+            c_emb = self.emb(cw_idxs)         # (batch_size, c_limit, hidden_size)
+            q_emb = self.emb(qw_idxs)         # (batch_size, q_limit, hidden_size)
 
-        c_enc = self.enc(c_emb, c_len)    # (batch_size, c_len, 2 * hidden_size)
-        q_enc = self.enc(q_emb, q_len)    # (batch_size, q_len, 2 * hidden_size)
+        if self.use_transformer:
+            # TODO: Add positional encodings
+            c_enc = self.c_enc(c_emb, c_mask)  # (batch_size, c_limit, hidden_size)
+            q_enc = self.q_enc(q_emb, q_mask)  # (batch_size, q_limit, hidden_size)
+
+        else:
+            c_enc = self.enc(c_emb, c_len)  # (batch_size, c_limit, 2 * hidden_size)
+            q_enc = self.enc(q_emb, q_len)  # (batch_size, q_limit, 2 * hidden_size)
 
         att = self.att(c_enc, q_enc,
-                       c_mask, q_mask)    # (batch_size, c_len, 8 * hidden_size)
+                       c_mask, q_mask)    # (batch_size, c_limit, 8 or 4 * hidden_size)
 
-        mod = self.mod(att, c_len)        # (batch_size, c_len, 2 * hidden_size)
+        mod = self.mod(att, c_len)        # (batch_size, c_limit, 2 or 1 * hidden_size)
 
-        out = self.out(att, mod, c_mask)  # 2 tensors, each (batch_size, c_len)
+        out = self.out(att, mod, c_mask)  # 2 tensors, each (batch_size, c_limit)
 
         return out
