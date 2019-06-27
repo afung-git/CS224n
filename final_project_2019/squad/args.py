@@ -40,14 +40,6 @@ def get_setup_args():
     parser.add_argument('--answer_file',
                         type=str,
                         default='./data/answer.json')
-    parser.add_argument('--para_limit',
-                        type=int,
-                        default=400,
-                        help='Max number of words in a paragraph')
-    parser.add_argument('--ques_limit',
-                        type=int,
-                        default=50,
-                        help='Max number of words to keep from a question')
     parser.add_argument('--test_para_limit',
                         type=int,
                         default=1000,
@@ -76,6 +68,14 @@ def get_setup_args():
                         type=lambda s: s.lower().startswith('t'),
                         default=True,
                         help='Process examples from the test set')
+    parser.add_argument('--para_limit',
+                        type=int,
+                        default=400,
+                        help='Max number of words in a paragraph')
+    parser.add_argument('--ques_limit',
+                        type=int,
+                        default=50,
+                        help='Max number of words to keep from a question')
 
     args = parser.parse_args()
 
@@ -234,6 +234,12 @@ def add_train_test_args(parser):
     parser.add_argument('--hidden_size',
                         default=100,
                         help='Number of features in encoder hidden layers.')
+    parser.add_argument('--inter_size',
+                        default=400,
+                        help='Number of features in feed-forward layers.')
+    parser.add_argument('--heads',
+                        default=4,
+                        help='Number of heads in Multi-Head Self-Attention.')
     parser.add_argument('--num_visuals',
                         type=int,
                         default=10,

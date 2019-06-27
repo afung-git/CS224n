@@ -300,6 +300,7 @@ def build_features(args, examples, data_type, out_file, word2idx_dict, char2idx_
 
         for i, token in enumerate(example["context_tokens"]):
             context_idx[i] = _get_word(token)
+
         context_idxs.append(context_idx)
 
         for i, token in enumerate(example["ques_tokens"]):

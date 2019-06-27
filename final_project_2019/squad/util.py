@@ -56,6 +56,7 @@ class SQuAD(data.Dataset):
             # SQuAD 2.0: Use index 0 for no-answer token (token 1 = OOV)
             batch_size, c_len, w_len = self.context_char_idxs.size()
             ones = torch.ones((batch_size, 1), dtype=torch.int64)
+
             self.context_idxs = torch.cat((ones, self.context_idxs), dim=1)
             self.question_idxs = torch.cat((ones, self.question_idxs), dim=1)
 

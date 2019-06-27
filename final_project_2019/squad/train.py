@@ -51,7 +51,10 @@ def main(args):
                   hidden_size=args.hidden_size,
                   drop_prob=args.drop_prob,
                   use_char=args.use_char,
-                  char_limit=args.char_limit)
+                  char_limit=args.char_limit,
+                  use_transformer=args.use_transformer,
+                  inter_size=args.inter_size,
+                  heads=args.heads)
 
     model = nn.DataParallel(model, args.gpu_ids)
     if args.load_path:

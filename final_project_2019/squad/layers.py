@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import math
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from util import masked_softmax
 from cnn import CNN
@@ -147,11 +148,11 @@ def self_attention(query, key, value, mask=None):
     :param mask: Optional mask, same for all heads (batch x heads x seq_len x seq_len)
     :return: output, scores (batch x heads x seq_len x d_k), (batch x heads x seq_len x seq_len)
     """
-    logits = torch.bmm(query, key.transpose(-1, -2))/torch.sqrt(key.shape[-1])
+    logits = torch.matmul(query, key.transpose(-1, -2))/math.sqrt(key.shape[-1])
     if mask is not None:
         logits = logits.masked_fill(mask==0, 1e-9)
     scores = F.softmax(logits, dim=-1)
-    return torch.bmm(scores, value), scores
+    return torch.matmul(scores, value), scores
 
 
 class MultiHeadSelfAttention(nn.Module):
@@ -165,7 +166,7 @@ class MultiHeadSelfAttention(nn.Module):
 
         assert hidden_size % heads == 0, "hidden_size not a multiple of heads"
 
-        self.d_k = hidden_size / heads
+        self.d_k = hidden_size // heads
         self.heads = heads
         self.Linears = nn.ModuleList([nn.Linear(hidden_size, hidden_size) for _ in range(4)])
         self.attn = None
@@ -185,10 +186,10 @@ class MultiHeadSelfAttention(nn.Module):
             mask = mask.unsqueeze(1)  # (batch_size x 1 x seq_len x seq_len)
 
         # Get the Q, K, V in multiple-heads form after linear layers
-        q, k, v = [l(x).view(batch_size, -1, self.heads, self.d_k) for l, x in zip(self.Linears, (q, k, v))]
-
+        q, k, v = [l(x).view(batch_size, -1, self.heads, self.d_k).transpose(1, 2)
+                   for l, x in zip(self.Linears, (q, k, v))]
         o, self.attn = self_attention(q, k, v, mask)  # (batch_size, heads, seq_len, d_k)
-        o = self.dropout(o).transpose(1, 2).view(batch_size, -1, self.heads*self.d_k)
+        o = self.dropout(o).transpose(1, 2).contiguous().view(batch_size, -1, self.heads*self.d_k)
 
         return self.Linears[-1](o)
 
@@ -238,17 +239,17 @@ def make_mask(masks, decode=False):
     :param decode: decoders are Auto-Regressive (can't see future words)
     :return: mask: (batch x seq_len x seq_len)
     """
-    masks = torch.bmm(masks.unsqueeze(2), masks.unsqueeze(1))
+    masks = torch.bmm(masks.unsqueeze(2).float(), masks.unsqueeze(1).float())
     if decode:
         masks = torch.from_numpy(np.tril(masks))
-    return masks
+    return masks.long()
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, heads, input_size, output_size, inter_size, seq_len, drop_prob=0.):
+    def __init__(self, heads, input_size, output_size, inter_size, drop_prob=0.):
         """
         :param heads: Number of heads in multi-layer self-attention
-        :param output_size: Input hidden state size
+        :param input_size: Input hidden state size
         :param output_size: Output hidden state size
         :param inter_size: Dimension of intermediate feed-forward layers
         :param seq_len: Maximum sequence length
@@ -257,7 +258,7 @@ class TransformerEncoder(nn.Module):
         super(TransformerEncoder, self).__init__()
         self.MHSA = MultiHeadSelfAttention(heads, input_size, drop_prob)
         self.FF = FeedForward(input_size, output_size, inter_size, drop_prob)
-        self.layers = nn.ModuleList([Sublayer((seq_len, input_size), drop_prob) for _ in range(2)])
+        self.layers = nn.ModuleList([Sublayer(input_size, drop_prob) for _ in range(2)])
 
     def forward(self, x, masks=None):
         """
@@ -282,11 +283,11 @@ class PositionalEncodings(nn.Module):
         self.dropout = nn.Dropout(p=drop_prob)
 
         PE = torch.zeros((max_len, d))  # (L, d)
-        pos = torch.arange(max_len).unsqueeze(1)  # (L, 1)
-        div = torch.exp(torch.arange(end=d, step=2)/d*torch.log(1e4))  # (d/2)
+        pos = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)  # (L, 1)
+        div = torch.exp(torch.arange(0., d, 2,)/d*math.log(1e4))  # (d/2)
         PE[:, ::2] = torch.sin(pos/div)  # (L, d/2)
         PE[:, 1::2] = torch.cos(pos/div)  # (L, d/2)
-        self.PE = PE.unsqueeze(0).requires_grad_(False)  # (1, L, d)
+        self.PE = nn.Parameter(PE.unsqueeze(0), requires_grad=False)  # (1, L, d)
 
     def forward(self, x):
         """
@@ -390,14 +391,12 @@ class BiDAFOutput(nn.Module):
                                   num_layers=1,
                                   drop_prob=drop_prob)
         else:
-            c_limit = kwargs['c_limit']
             heads = kwargs['heads']
             inter_size = kwargs['inter_size']
             self.enc = TransformerEncoder(heads=heads,
                 input_size=hidden_size,  # hidden_size= h
                 output_size=hidden_size,  # hidden_size= h
                 inter_size=inter_size,
-                seq_len=c_limit,
                 drop_prob=drop_prob)
 
         self.att_linear_2 = nn.Linear(4 * hidden_size, 1)
