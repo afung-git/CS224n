@@ -188,7 +188,7 @@ class MultiHeadSelfAttention(nn.Module):
         # Get the Q, K, V in multiple-heads form after linear layers
         q, k, v = [l(x).view(batch_size, -1, self.heads, self.d_k) for l, x in zip(self.Linears, (q, k, v))]
 
-        o, self.attn = self_attention(q, k, v, mask)
+        o, self.attn = self_attention(q, k, v, mask)  # (batch_size, heads, seq_len, d_k)
         o = self.dropout(o).transpose(1, 2).view(batch_size, -1, self.heads*self.d_k)
 
         return self.Linears[-1](o)
