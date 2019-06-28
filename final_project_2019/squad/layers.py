@@ -228,9 +228,9 @@ class Sublayer(nn.Module):
         """
         :param x: Input (batch x seq_len x hidden_size)
         :param sub: Sublayer (Feedforward, MultiHeadSelfAttention etc.)
-        :return: Normalize, Sublayer, Dropout then Residual
+        :return: Normalize, Sublayer, Dropout
         """
-        return x + self.dropout(sub(self.norm(x)))
+        return self.dropout(sub(self.norm(x)))
 
 
 def make_mask(masks, decode=False):
@@ -259,6 +259,7 @@ class TransformerEncoder(nn.Module):
         self.MHSA = MultiHeadSelfAttention(heads, input_size, drop_prob)
         self.FF = FeedForward(input_size, output_size, inter_size, drop_prob)
         self.layers = nn.ModuleList([Sublayer(input_size, drop_prob) for _ in range(2)])
+        self.downsample = nn.Linear(input_size, output_size) if input_size > output_size else None
 
     def forward(self, x, masks=None):
         """
@@ -268,8 +269,8 @@ class TransformerEncoder(nn.Module):
         """
         if masks is not None:
             masks = make_mask(masks)
-        x = self.layers[0](x, lambda x: self.MHSA(x, x, x, masks))  # Need lambda due to mask
-        return self.layers[1](x, self.FF)
+        x = x + self.layers[0](x, lambda x: self.MHSA(x, x, x, masks))  # Need lambda due to mask
+        return (x if self.downsample is None else self.downsample(x)) + self.layers[1](x, self.FF)
 
 
 class PositionalEncodings(nn.Module):

@@ -61,14 +61,7 @@ class BiDAF(nn.Module):
             self.heads = kwargs['heads']
             self.inter_size = kwargs['inter_size']
             self.PE = layers.PositionalEncodings(hidden_size, drop_prob)
-            self.c_enc = layers.TransformerEncoder(
-                heads=self.heads,
-                input_size=hidden_size,
-                output_size=hidden_size,
-                inter_size=self.inter_size,
-                drop_prob=drop_prob
-            )
-            self.q_enc = layers.TransformerEncoder(
+            self.enc = layers.TransformerEncoder(
                 heads=self.heads,
                 input_size=hidden_size,
                 output_size=hidden_size,
@@ -77,7 +70,7 @@ class BiDAF(nn.Module):
             )
             self.mod = layers.TransformerEncoder(
                 heads=self.heads,
-                input_size=4*hidden_size,  # TODO: Residual throws error, 400,x vs 100,FF(x)
+                input_size=4*hidden_size,
                 output_size=hidden_size,
                 inter_size=self.inter_size,
                 drop_prob=drop_prob
@@ -113,8 +106,8 @@ class BiDAF(nn.Module):
         if self.use_transformer:
             c_emb = self.PE(c_emb)  # (batch_size, c_limit, hidden_size)
             q_emb = self.PE(q_emb)  # (batch_size, q_limit, hidden_size)
-            c_enc = self.c_enc(c_emb, c_mask)  # (batch_size, c_limit, hidden_size)
-            q_enc = self.q_enc(q_emb, q_mask)  # (batch_size, q_limit, hidden_size)
+            c_enc = self.enc(c_emb, c_mask)  # (batch_size, c_limit, hidden_size)
+            q_enc = self.enc(q_emb, q_mask)  # (batch_size, q_limit, hidden_size)
 
         else:
             c_enc = self.enc(c_emb, c_len)  # (batch_size, c_limit, 2 * hidden_size)
