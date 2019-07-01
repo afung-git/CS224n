@@ -55,30 +55,35 @@ class BiDAF(nn.Module):
                                          hidden_size=hidden_size,  # output = 2*hidden_size
                                          num_layers=2,
                                          drop_prob=drop_prob)
-            self.out = layers.BiDAFOutput(hidden_size=2*hidden_size, drop_prob=drop_prob, use_transformer=use_transformer)
-
+            self.out = layers.BiDAFOutput(hidden_size=2 * hidden_size, drop_prob=drop_prob,
+                                          use_transformer=use_transformer)
         else:
             self.heads = kwargs['heads']
             self.inter_size = kwargs['inter_size']
-            self.PE = layers.PositionalEncodings(hidden_size, drop_prob)
-            self.enc = layers.TransformerEncoder(
+            self.PE = layers.PositionalEncodings(hidden_size, .1)
+            self.enc = layers.TransformerEncoderStack(
+                N=1,
                 heads=self.heads,
                 input_size=hidden_size,
                 output_size=hidden_size,
                 inter_size=self.inter_size,
-                drop_prob=drop_prob
-            )
-            self.mod = layers.TransformerEncoder(
+                drop_prob=.1
+                )
+
+            self.mod = layers.TransformerEncoderStack(
+                N=1,
                 heads=self.heads,
                 input_size=4*hidden_size,
                 output_size=hidden_size,
                 inter_size=self.inter_size,
-                drop_prob=drop_prob
-            )
-            self.out = layers.BiDAFOutput(hidden_size=hidden_size, drop_prob=drop_prob, use_transformer=use_transformer,
+                drop_prob=.1
+                )
+
+            self.out = layers.BiDAFOutput(hidden_size=hidden_size, drop_prob=drop_prob,
+                                          use_transformer=use_transformer,
                                           heads=self.heads, inter_size=self.inter_size)
 
-        self.att = layers.BiDAFAttention(hidden_size=(2*hidden_size if not self.use_transformer else hidden_size),
+        self.att = layers.BiDAFAttention(hidden_size=(1 if self.use_transformer else 2)*hidden_size,
                                          drop_prob=drop_prob)  # (batch_size, seq_len, 4*input_hidden_size)
 
     def forward(self, c_idxs, q_idxs):
@@ -106,17 +111,12 @@ class BiDAF(nn.Module):
         if self.use_transformer:
             c_emb = self.PE(c_emb)  # (batch_size, c_limit, hidden_size)
             q_emb = self.PE(q_emb)  # (batch_size, q_limit, hidden_size)
-            c_enc = self.enc(c_emb, c_mask)  # (batch_size, c_limit, hidden_size)
-            q_enc = self.enc(q_emb, q_mask)  # (batch_size, q_limit, hidden_size)
 
-        else:
-            c_enc = self.enc(c_emb, c_len)  # (batch_size, c_limit, 2 * hidden_size)
-            q_enc = self.enc(q_emb, q_len)  # (batch_size, q_limit, 2 * hidden_size)
+        c_enc = self.enc(c_emb, c_mask if self.use_transformer else c_len)  # (batch_size, c_limit, 2 * hidden_size)
+        q_enc = self.enc(q_emb, q_mask if self.use_transformer else q_len)  # (batch_size, q_limit, 2 * hidden_size)
 
-        att = self.att(c_enc, q_enc,
-                       c_mask, q_mask)    # (batch_size, c_limit, 8 or 4 * hidden_size)
-
-        mod = self.mod(att, c_mask if self.use_transformer else c_len)  # (batch_size, c_limit, 2 or 1 * hidden_size)
+        att = self.att(c_enc, q_enc, c_mask, q_mask)    # (batch_size, c_limit, 8 * hidden_size)
+        mod = self.mod(att, c_mask if self.use_transformer else c_len)  # (batch_size, c_limit, 2 * hidden_size)
 
         out = self.out(att, mod, c_mask)  # 2 tensors, each (batch_size, c_limit)
 

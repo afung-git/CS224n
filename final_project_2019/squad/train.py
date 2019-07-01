@@ -74,9 +74,13 @@ def main(args):
                                  log=log)
 
     # Get optimizer and scheduler
-    optimizer = optim.Adadelta(model.parameters(), args.lr,
-                               weight_decay=args.l2_wd)
-    scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
+    # optimizer = optim.Adadelta(model.parameters(), args.lr,
+    #                            weight_decay=args.l2_wd)
+    optimizer = optim.Adam(model.parameters(), 0, betas=(.9, .98), eps=1e-9)
+    # scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
+    scheduler = sched.LambdaLR(optimizer, lambda s: (args.hidden_size**(-.5)) *
+                               min(s**(-.5), s*(4000**(-1.5)))
+                               )  # From Vaswani et. al 2017. If fails, try Chute's
 
     # Get data loader
     log.info('Building dataset...')
@@ -128,11 +132,11 @@ def main(args):
                 loss.backward()
                 nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
                 optimizer.step()
-                scheduler.step(step // batch_size)
+                scheduler.step(step // batch_size)  # By default, schedules per epoch; pass in step # as "epoch"
                 ema(model, step // batch_size)
 
                 # Log info
-                step += batch_size
+                step += batch_size  # Number of examples. Step is usually the number of (mini)-batches
                 progress_bar.update(batch_size)
                 progress_bar.set_postfix(epoch=epoch,
                                          NLL=loss_val)
