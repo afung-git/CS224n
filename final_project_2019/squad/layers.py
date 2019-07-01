@@ -8,10 +8,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-import math
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from util import masked_softmax
 from cnn import CNN
+import math
 
 
 class Embedding(nn.Module):
@@ -140,18 +140,21 @@ class RNNEncoder(nn.Module):
         return x
 
 
-def self_attention(query, key, value, mask=None):
+def self_attention(query, key, value, mask=None, dp=None):
     """
     :param query: Query tensor (batch x heads x seq_len x d_k)
     :param key: Key tensor (batch x heads x seq_len x d_k)
     :param value: Value tensor (batch x heads x seq_len x d_k)
     :param mask: Optional mask, same for all heads (batch x heads x seq_len x seq_len)
+    :param dp: Dropout layer
     :return: output, scores (batch x heads x seq_len x d_k), (batch x heads x seq_len x seq_len)
     """
-    logits = torch.matmul(query, key.transpose(-1, -2))/math.sqrt(key.shape[-1])
+    logits = torch.matmul(query, key.transpose(-1, -2))/(key.shape[-1]**(-.5))
     if mask is not None:
-        logits = logits.masked_fill(mask==0, 1e-9)
+        logits = logits.masked_fill(mask==0, -1e9)  # NOT 1e-9. Softmax(1e-9) is still 1.
     scores = F.softmax(logits, dim=-1)
+    if dp is not None:
+        scores = dp(scores)
     return torch.matmul(scores, value), scores
 
 
@@ -188,8 +191,8 @@ class MultiHeadSelfAttention(nn.Module):
         # Get the Q, K, V in multiple-heads form after linear layers
         q, k, v = [l(x).view(batch_size, -1, self.heads, self.d_k).transpose(1, 2)
                    for l, x in zip(self.Linears, (q, k, v))]
-        o, self.attn = self_attention(q, k, v, mask)  # (batch_size, heads, seq_len, d_k)
-        o = self.dropout(o).transpose(1, 2).contiguous().view(batch_size, -1, self.heads*self.d_k)
+        o, self.attn = self_attention(q, k, v, mask, self.dropout)  # (batch_size, heads, seq_len, d_k)
+        o = o.transpose(1, 2).contiguous().view(batch_size, -1, self.heads*self.d_k)
 
         return self.Linears[-1](o)
 
@@ -221,8 +224,8 @@ class Sublayer(nn.Module):
         :param drop_prob: Dropout rate
         """
         super(Sublayer, self).__init__()
-        self.norm = nn.LayerNorm(size)
         self.dropout = nn.Dropout(p=drop_prob)
+        self.norm = nn.LayerNorm(size)  # Only Norm the last dimension (seq_len differs from batch to batch)
 
     def forward(self, x, sub):
         """
@@ -237,16 +240,16 @@ def make_mask(masks, decode=False):
     """
     :param masks: 0 for pad, 1 for non-pad (batch x seq_len)
     :param decode: decoders are Auto-Regressive (can't see future words)
-    :return: mask: (batch x seq_len x seq_len)
+    :return: mask: (batch x seq_len x seq_len / batch x 1 x seq_len)
     """
-    masks = torch.bmm(masks.unsqueeze(2).float(), masks.unsqueeze(1).float())
+    masks = masks.unsqueeze(-2)  # Pad words should not be zeroed across their whole rows
     if decode:
-        masks = torch.from_numpy(np.tril(masks))
+        masks = masks & torch.from_numpy(np.tril(np.ones(masks.shape[-1]))).byte()
     return masks.long()
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, heads, input_size, output_size, inter_size, drop_prob=0.):
+    def __init__(self, heads, input_size, output_size, inter_size, drop_prob=.1):
         """
         :param heads: Number of heads in multi-layer self-attention
         :param input_size: Input hidden state size
@@ -259,7 +262,10 @@ class TransformerEncoder(nn.Module):
         self.MHSA = MultiHeadSelfAttention(heads, input_size, drop_prob)
         self.FF = FeedForward(input_size, output_size, inter_size, drop_prob)
         self.layers = nn.ModuleList([Sublayer(input_size, drop_prob) for _ in range(2)])
-        self.downsample = nn.Linear(input_size, output_size) if input_size > output_size else None
+        self.morph = nn.Linear(input_size, output_size) if input_size != output_size else None  # match in/output shapes
+        for p in self.parameters():  # This is important in the paper
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
 
     def forward(self, x, masks=None):
         """
@@ -269,12 +275,12 @@ class TransformerEncoder(nn.Module):
         """
         if masks is not None:
             masks = make_mask(masks)
-        x = x + self.layers[0](x, lambda x: self.MHSA(x, x, x, masks))  # Need lambda due to mask
-        return (x if self.downsample is None else self.downsample(x)) + self.layers[1](x, self.FF)
+        x = x + self.layers[0](x, lambda y: self.MHSA(y, y, y, masks))  # Need lambda due to mask
+        return (x if self.morph is None else self.morph(x)) + self.layers[1](x, self.FF)
 
 
 class PositionalEncodings(nn.Module):
-    def __init__(self, d, drop_prob=0., max_len=5000):
+    def __init__(self, d, drop_prob=.1, max_len=5000):
         """
         :param d: Dimension of embedding
         :param drop_prob: Dropout Rate
@@ -285,17 +291,47 @@ class PositionalEncodings(nn.Module):
 
         PE = torch.zeros((max_len, d))  # (L, d)
         pos = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)  # (L, 1)
-        div = torch.exp(torch.arange(0., d, 2,)/d*math.log(1e4))  # (d/2)
+        div = torch.exp(torch.arange(0., d, 2)/d*math.log(1e4))  # (d/2)
         PE[:, ::2] = torch.sin(pos/div)  # (L, d/2)
         PE[:, 1::2] = torch.cos(pos/div)  # (L, d/2)
-        self.PE = nn.Parameter(PE.unsqueeze(0), requires_grad=False)  # (1, L, d)
+        self.register_buffer('PE', PE)  # (L, d)
 
     def forward(self, x):
         """
         :param x: Input (batch, seq_len, d)
         :return: x + PE
         """
-        return self.dropout(x + self.PE[0, x.shape[1]])
+        return self.dropout(x + self.PE[:x.shape[1]])  # You added the same PE sinusoid to all positions
+
+
+class TransformerEncoderStack(nn.Module):
+    def __init__(self, N, heads, input_size, output_size, inter_size, drop_prob=.1):
+        """
+        :param layer: Transformer layer
+        :param N: Number of layers to stack
+        """
+        super(TransformerEncoderStack, self).__init__()
+        self.layers = nn.ModuleList([TransformerEncoder(heads=heads,
+                input_size=input_size,
+                output_size=input_size,
+                inter_size=inter_size,
+                drop_prob=drop_prob) for _ in range(N-1)])
+        self.last = TransformerEncoder(heads=heads,
+                input_size=input_size,
+                output_size=output_size,
+                inter_size=inter_size,
+                drop_prob=drop_prob)
+        self.norm = nn.LayerNorm(output_size)
+
+    def forward(self, x, mask):
+        """
+        :param x: Input (batch x seq_len x input_size)
+        :param mask: mask (batch x seq_len)
+        :return: Output (batch x seq_len x output_size)
+        """
+        for layer in self.layers:
+            x = layer(x, mask)
+        return self.norm(self.last(x, mask))
 
 
 class BiDAFAttention(nn.Module):
@@ -394,11 +430,12 @@ class BiDAFOutput(nn.Module):
         else:
             heads = kwargs['heads']
             inter_size = kwargs['inter_size']
-            self.enc = TransformerEncoder(heads=heads,
+            self.enc = TransformerEncoderStack(N=1,
+                heads=heads,
                 input_size=hidden_size,  # hidden_size= h
                 output_size=hidden_size,  # hidden_size= h
                 inter_size=inter_size,
-                drop_prob=drop_prob)
+                drop_prob=.1)
 
         self.att_linear_2 = nn.Linear(4 * hidden_size, 1)
         self.mod_linear_2 = nn.Linear(hidden_size, 1)

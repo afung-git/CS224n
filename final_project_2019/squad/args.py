@@ -232,13 +232,13 @@ def add_train_test_args(parser):
                         default=True,
                         help='Whether to use SQuAD 2.0 (unanswerable) questions.')
     parser.add_argument('--hidden_size',
-                        default=100,
+                        default=104,
                         help='Number of features in encoder hidden layers.')
     parser.add_argument('--inter_size',
-                        default=400,
+                        default=416,
                         help='Number of features in feed-forward layers.')
     parser.add_argument('--heads',
-                        default=4,
+                        default=8,
                         help='Number of heads in Multi-Head Self-Attention.')
     parser.add_argument('--num_visuals',
                         type=int,
