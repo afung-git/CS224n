@@ -79,7 +79,7 @@ def main(args):
     optimizer = optim.Adam(model.parameters(), 0, betas=(.9, .98), eps=1e-9)
     # scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
     scheduler = sched.LambdaLR(optimizer, lambda s: (args.hidden_size**(-.5)) *
-                               min(s**(-.5), s*(4000**(-1.5)))
+                               min((s+1e-9)**(-.5), s*(4000**(-1.5)))
                                )  # From Vaswani et. al 2017. If fails, try Chute's
 
     # Get data loader
