@@ -109,13 +109,20 @@ class RNNEncoder(nn.Module):
                  input_size,
                  hidden_size,
                  num_layers,
-                 drop_prob=0.):
+                 drop_prob=0.,
+                 use_GRU=True):
         super(RNNEncoder, self).__init__()
         self.drop_prob = drop_prob
-        self.rnn = nn.LSTM(input_size, hidden_size, num_layers,
-                           batch_first=True,
-                           bidirectional=True,
-                           dropout=drop_prob if num_layers > 1 else 0.)
+        if use_GRU:
+            self.rnn = nn.GRU(input_size, hidden_size, num_layers,
+                               batch_first=True,
+                               bidirectional=True,
+                               dropout=drop_prob if num_layers > 1 else 0.)
+        else:
+            self.rnn = nn.LSTM(input_size, hidden_size, num_layers,
+                               batch_first=True,
+                               bidirectional=True,
+                               dropout=drop_prob if num_layers > 1 else 0.)
 
     def forward(self, x, lengths):
         # Save original padded length for use by pad_packed_sequence
@@ -227,13 +234,15 @@ class Sublayer(nn.Module):
         self.dropout = nn.Dropout(p=drop_prob)
         self.norm = nn.LayerNorm(size)  # Only Norm the last dimension (seq_len differs from batch to batch)
 
-    def forward(self, x, sub):
+    def forward(self, x, sub, swap=False):
         """
         :param x: Input (batch x seq_len x hidden_size)
         :param sub: Sublayer (Feedforward, MultiHeadSelfAttention etc.)
+        :param: swap: Flag to transpose layers (especially for conv)
         :return: Normalize, Sublayer, Dropout
         """
-        return self.dropout(sub(self.norm(x)))
+        return self.dropout(sub(self.norm(x).transpose(1, 2)).transpose(1, 2) if swap else
+                            sub(self.norm(x)))
 
 
 def make_mask(masks, decode=False):
@@ -249,19 +258,21 @@ def make_mask(masks, decode=False):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, heads, input_size, output_size, inter_size, drop_prob=.1):
+    def __init__(self, heads, input_size, output_size, inter_size, num_conv=3, drop_prob=.1):
         """
         :param heads: Number of heads in multi-layer self-attention
         :param input_size: Input hidden state size
         :param output_size: Output hidden state size
         :param inter_size: Dimension of intermediate feed-forward layers
-        :param seq_len: Maximum sequence length
+        :param num_conv: Number of convolutional layers before MHSA
         :param drop_prob: Dropout rate
         """
         super(TransformerEncoder, self).__init__()
+        self.PE = PositionalEncodings(input_size, drop_prob)
+        self.convs = nn.ModuleList([nn.Conv1d(input_size, input_size, 5, padding=2) for _ in range(num_conv)])
         self.MHSA = MultiHeadSelfAttention(heads, input_size, drop_prob)
         self.FF = FeedForward(input_size, output_size, inter_size, drop_prob)
-        self.layers = nn.ModuleList([Sublayer(input_size, drop_prob) for _ in range(2)])
+        self.layers = nn.ModuleList([Sublayer(input_size, drop_prob) for _ in range(2 + num_conv)])
         self.morph = nn.Linear(input_size, output_size) if input_size != output_size else None  # match in/output shapes
         for p in self.parameters():  # This is important in the paper
             if p.dim() > 1:
@@ -273,10 +284,13 @@ class TransformerEncoder(nn.Module):
         :param masks: (batch, seq_len)
         :return: o: Output (batch, seq_len, hidden_size)
         """
+        x = self.PE(x)
+        for i, conv in enumerate(self.convs):
+            x = x + self.layers[i](x, conv, True)
         if masks is not None:
             masks = make_mask(masks)
-        x = x + self.layers[0](x, lambda y: self.MHSA(y, y, y, masks))  # Need lambda due to mask
-        return (x if self.morph is None else self.morph(x)) + self.layers[1](x, self.FF)
+        x = x + self.layers[len(self.convs)](x, lambda y: self.MHSA(y, y, y, masks))  # Need lambda due to mask
+        return (x if self.morph is None else self.morph(x)) + self.layers[len(self.convs)+1](x, self.FF)
 
 
 class PositionalEncodings(nn.Module):

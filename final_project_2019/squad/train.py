@@ -54,7 +54,8 @@ def main(args):
                   char_limit=args.char_limit,
                   use_transformer=args.use_transformer,
                   inter_size=args.inter_size,
-                  heads=args.heads)
+                  heads=args.heads,
+                  use_GRU=args.use_GRU)
 
     model = nn.DataParallel(model, args.gpu_ids)
     if args.load_path:
@@ -74,13 +75,15 @@ def main(args):
                                  log=log)
 
     # Get optimizer and scheduler
-    # optimizer = optim.Adadelta(model.parameters(), args.lr,
-    #                            weight_decay=args.l2_wd)
-    optimizer = optim.Adam(model.parameters(), 0, betas=(.9, .98), eps=1e-9)
-    # scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
-    scheduler = sched.LambdaLR(optimizer, lambda s: (args.hidden_size**(-.5)) *
-                               min((s+1e-9)**(-.5), s*(4000**(-1.5)))
-                               )  # From Vaswani et. al 2017. If fails, try Chute's
+    optimizer = optim.Adadelta(model.parameters(), args.lr,
+                               weight_decay=args.l2_wd)
+
+    # The scheduler MULTIPLIES the base LR, NOT replaces
+    # optimizer = optim.Adam(model.parameters(), 1., betas=(.9, .98), eps=1e-9)
+    scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
+    # scheduler = sched.LambdaLR(optimizer, lambda s: (args.hidden_size**(-.5)) *
+    #                            min((s+1e-9)**(-.5), s*(4000**(-1.5)))
+    #                            )  # From Vaswani et. al 2017. If fails, try Chute's
 
     # Get data loader
     log.info('Building dataset...')

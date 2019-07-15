@@ -254,3 +254,6 @@ def add_train_test_args(parser):
     parser.add_argument('--use_transformer',
                         action='store_true',
                         help='To use Transformer Encoders or not.')
+    parser.add_argument('--use_GRU',
+                        action='store_true',
+                        help='To use GRUs or not.')

@@ -24,7 +24,7 @@ class CNN(nn.Module):
         self.word_size = word_size
         self.kernel_size = kernel_size
         self.word_length = word_length
-        self.test= is_test
+        self.test = is_test
 
         self.conv = nn.Conv1d(self.char_size, self.word_size, self.kernel_size)
         if is_test:

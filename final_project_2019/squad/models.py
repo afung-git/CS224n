@@ -29,10 +29,11 @@ class BiDAF(nn.Module):
         hidden_size (int): Number of features in the hidden state at each layer.
         drop_prob (float): Dropout probability.
     """
-    def __init__(self, vectors, hidden_size, drop_prob=0., use_char=False, use_transformer=False, **kwargs):
+    def __init__(self, vectors, hidden_size, drop_prob=0., use_char=False, use_transformer=False, use_GRU=True, **kwargs):
         super(BiDAF, self).__init__()
         self.use_char = use_char
         self.use_transformer = use_transformer
+        self.use_GRU = use_GRU
         self.hidden_size = hidden_size
 
         if not use_char:
@@ -50,17 +51,18 @@ class BiDAF(nn.Module):
             self.enc = layers.RNNEncoder(input_size=hidden_size,
                                          hidden_size=hidden_size,  # output = 2*hidden_size
                                          num_layers=1,
-                                         drop_prob=drop_prob)
+                                         drop_prob=drop_prob,
+                                         use_GRU=use_GRU)
             self.mod = layers.RNNEncoder(input_size=8 * hidden_size,
                                          hidden_size=hidden_size,  # output = 2*hidden_size
                                          num_layers=2,
-                                         drop_prob=drop_prob)
+                                         drop_prob=drop_prob,
+                                         use_GRU=use_GRU)
             self.out = layers.BiDAFOutput(hidden_size=2 * hidden_size, drop_prob=drop_prob,
                                           use_transformer=use_transformer)
         else:
             self.heads = kwargs['heads']
             self.inter_size = kwargs['inter_size']
-            self.PE = layers.PositionalEncodings(hidden_size, .1)
             self.enc = layers.TransformerEncoderStack(
                 N=1,
                 heads=self.heads,
@@ -107,10 +109,6 @@ class BiDAF(nn.Module):
         else:
             c_emb = self.emb(cw_idxs)         # (batch_size, c_limit, hidden_size)
             q_emb = self.emb(qw_idxs)         # (batch_size, q_limit, hidden_size)
-
-        if self.use_transformer:
-            c_emb = self.PE(c_emb)  # (batch_size, c_limit, hidden_size)
-            q_emb = self.PE(q_emb)  # (batch_size, q_limit, hidden_size)
 
         c_enc = self.enc(c_emb, c_mask if self.use_transformer else c_len)  # (batch_size, c_limit, 2 * hidden_size)
         q_enc = self.enc(q_emb, q_mask if self.use_transformer else q_len)  # (batch_size, q_limit, 2 * hidden_size)
