@@ -29,7 +29,7 @@ class BiDAF(nn.Module):
         hidden_size (int): Number of features in the hidden state at each layer.
         drop_prob (float): Dropout probability.
     """
-    def __init__(self, vectors, hidden_size, drop_prob=0., use_char=False, use_transformer=False, use_GRU=True, **kwargs):
+    def __init__(self, vectors, hidden_size,use_char, use_transformer, use_GRU, drop_prob=0., **kwargs):
         super(BiDAF, self).__init__()
         self.use_char = use_char
         self.use_transformer = use_transformer
@@ -69,21 +69,21 @@ class BiDAF(nn.Module):
                 input_size=hidden_size,
                 output_size=hidden_size,
                 inter_size=self.inter_size,
+                num_conv=4,
                 drop_prob=.1
                 )
 
             self.mod = layers.TransformerEncoderStack(
-                N=1,
+                N=3,
                 heads=self.heads,
                 input_size=4*hidden_size,
-                output_size=hidden_size,
+                output_size=4*hidden_size,
                 inter_size=self.inter_size,
+                num_conv=2,
                 drop_prob=.1
                 )
 
-            self.out = layers.BiDAFOutput(hidden_size=hidden_size, drop_prob=drop_prob,
-                                          use_transformer=use_transformer,
-                                          heads=self.heads, inter_size=self.inter_size)
+            self.out = layers.QAOutput(8*hidden_size)
 
         self.att = layers.BiDAFAttention(hidden_size=(1 if self.use_transformer else 2)*hidden_size,
                                          drop_prob=drop_prob)  # (batch_size, seq_len, 4*input_hidden_size)
@@ -114,8 +114,13 @@ class BiDAF(nn.Module):
         q_enc = self.enc(q_emb, q_mask if self.use_transformer else q_len)  # (batch_size, q_limit, 2 * hidden_size)
 
         att = self.att(c_enc, q_enc, c_mask, q_mask)    # (batch_size, c_limit, 8 * hidden_size)
-        mod = self.mod(att, c_mask if self.use_transformer else c_len)  # (batch_size, c_limit, 2 * hidden_size)
 
-        out = self.out(att, mod, c_mask)  # 2 tensors, each (batch_size, c_limit)
+        if self.use_transformer:
+            start, end = layers.QAModel(self.mod, att, c_mask)  # 2 x (batch_size, c_limit, 8 * hidden_size)
+            out = self.out(start, end, c_mask)  # 2 tensors, each (batch_size, c_limit)
+
+        else:
+            mod = self.mod(att, c_len)  # (batch_size, c_limit, 2 * hidden_size)
+            out = self.out(att, mod, c_mask)  # 2 tensors, each (batch_size, c_limit)
 
         return out

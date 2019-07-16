@@ -258,7 +258,7 @@ def make_mask(masks, decode=False):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, heads, input_size, output_size, inter_size, num_conv=3, drop_prob=.1):
+    def __init__(self, heads, input_size, output_size, inter_size, num_conv, drop_prob=.1):
         """
         :param heads: Number of heads in multi-layer self-attention
         :param input_size: Input hidden state size
@@ -269,7 +269,7 @@ class TransformerEncoder(nn.Module):
         """
         super(TransformerEncoder, self).__init__()
         self.PE = PositionalEncodings(input_size, drop_prob)
-        self.convs = nn.ModuleList([nn.Conv1d(input_size, input_size, 5, padding=2) for _ in range(num_conv)])
+        self.convs = nn.ModuleList([nn.Conv1d(input_size, input_size, 7, padding=3) for _ in range(num_conv)])
         self.MHSA = MultiHeadSelfAttention(heads, input_size, drop_prob)
         self.FF = FeedForward(input_size, output_size, inter_size, drop_prob)
         self.layers = nn.ModuleList([Sublayer(input_size, drop_prob) for _ in range(2 + num_conv)])
@@ -278,7 +278,7 @@ class TransformerEncoder(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, x, masks=None):
+    def forward(self, x, masks):
         """
         :param x: Input (batch, seq_len, hidden_size)
         :param masks: (batch, seq_len)
@@ -319,7 +319,7 @@ class PositionalEncodings(nn.Module):
 
 
 class TransformerEncoderStack(nn.Module):
-    def __init__(self, N, heads, input_size, output_size, inter_size, drop_prob=.1):
+    def __init__(self, N, heads, input_size, output_size, inter_size, num_conv, drop_prob=.1):
         """
         :param layer: Transformer layer
         :param N: Number of layers to stack
@@ -329,15 +329,17 @@ class TransformerEncoderStack(nn.Module):
                 input_size=input_size,
                 output_size=input_size,
                 inter_size=inter_size,
+                num_conv=num_conv,
                 drop_prob=drop_prob) for _ in range(N-1)])
         self.last = TransformerEncoder(heads=heads,
                 input_size=input_size,
                 output_size=output_size,
                 inter_size=inter_size,
+                num_conv=num_conv,
                 drop_prob=drop_prob)
         self.norm = nn.LayerNorm(output_size)
 
-    def forward(self, x, mask):
+    def forward(self, x, mask=None):
         """
         :param x: Input (batch x seq_len x input_size)
         :param mask: mask (batch x seq_len)
@@ -346,6 +348,20 @@ class TransformerEncoderStack(nn.Module):
         for layer in self.layers:
             x = layer(x, mask)
         return self.norm(self.last(x, mask))
+
+
+def QAModel(modelstack, x, mask):
+    """
+    Perform QANet modelling
+    :param modelstack: Transformer Encoder Stack
+    :param x: Input tensor (B x L x 4H) from BiDAF Attention
+    :param mask: Mask for pads
+    :return: start=[M1, M2], end=[M1, M3] (B x L x 8H)
+    """
+    M1 = modelstack(x, mask)
+    M2 = modelstack(M1, mask)
+    M3 = modelstack(M2, mask)
+    return torch.cat((M1, M2), dim=2), torch.cat((M1, M3), dim=2)
 
 
 class BiDAFAttention(nn.Module):
@@ -464,6 +480,26 @@ class BiDAFOutput(nn.Module):
         logits_2 = self.att_linear_2(att) + self.mod_linear_2(mod_2)
 
         # Shapes: (batch_size, seq_len)
+        log_p1 = masked_softmax(logits_1.squeeze(), mask, log_softmax=True)
+        log_p2 = masked_softmax(logits_2.squeeze(), mask, log_softmax=True)
+
+        return log_p1, log_p2
+
+
+class QAOutput(nn.Module):
+    """
+    QANet Output layer. Takes a start tensor and end tensor,
+    Feeds each into a Feed-Forward layer, then Masked-Softmax.
+    Returns probability of start and end positions
+    """
+    def __init__(self, input_size):
+        super(QAOutput, self).__init__()
+        self.startFF = nn.Linear(input_size, 1)
+        self.endFF = nn.Linear(input_size, 1)
+
+    def forward(self, start, end, mask):
+        logits_1 = self.startFF(start)
+        logits_2 = self.startFF(end)
         log_p1 = masked_softmax(logits_1.squeeze(), mask, log_softmax=True)
         log_p2 = masked_softmax(logits_2.squeeze(), mask, log_softmax=True)
 
