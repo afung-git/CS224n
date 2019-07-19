@@ -30,6 +30,9 @@ class CNN(nn.Module):
         if is_test:
             self.conv.weight = nn.Parameter(torch.ones_like(self.conv.weight))
             self.conv.bias = nn.Parameter(torch.zeros_like(self.conv.bias))
+        else:
+            nn.init.kaiming_normal_(self.conv.weight, nonlinearity='relu')
+            nn.init.constant_(self.conv.bias, 0.)
         self.ReLU = nn.ReLU()
         self.maxpool = nn.MaxPool1d(self.word_length - self.kernel_size + 1)
 
@@ -48,7 +51,7 @@ class CNN(nn.Module):
 
 def test():
     C = CNN(3, 5, 6, 4, is_test=True)
-    x = torch.tensor([[[2.0,-1.0]*3]*3, [[-2.0, 1.0]*3]*3]) #2 words. Each word has 6 chars, each char 3 elements 
+    x = torch.tensor([[[2.0, -1.0]*3]*3, [[-2.0, 1.0]*3]*3])  # 2 words. Each word has 6 chars, each char 3 elements
     y, x_conv = C(x)
     x_conv_t = np.array([[[6]*3]*5, [[-6]*3]*5])
     y_t = np.array([[6]*5, [0]*5])

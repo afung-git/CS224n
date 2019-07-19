@@ -83,6 +83,14 @@ class HighwayEncoder(nn.Module):
         self.gates = nn.ModuleList([nn.Linear(hidden_size, hidden_size)
                                     for _ in range(num_layers)])
 
+        for g in self.gates:
+            nn.init.kaiming_normal_(g.weight, nonlinearity='relu')
+            nn.init.constant_(g.bias, 0.)
+
+        for t in self.transforms:
+            nn.init.kaiming_normal_(t.weight, nonlinearity='relu')
+            nn.init.constant_(t.bias, 0.)
+
     def forward(self, x):
         for gate, transform in zip(self.gates, self.transforms):
             # Shapes of g, t, and x are all (batch_size, seq_len, hidden_size)
@@ -147,18 +155,21 @@ class RNNEncoder(nn.Module):
         return x
 
 
-def self_attention(query, key, value, mask=None, dp=None):
+def self_attention(query, key, value, mask=None, bias=None, dp=None):
     """
     :param query: Query tensor (batch x heads x seq_len x d_k)
     :param key: Key tensor (batch x heads x seq_len x d_k)
     :param value: Value tensor (batch x heads x seq_len x d_k)
     :param mask: Optional mask, same for all heads (batch x heads x seq_len x seq_len)
+    :param bias: Bias (optional)
     :param dp: Dropout layer
     :return: output, scores (batch x heads x seq_len x d_k), (batch x heads x seq_len x seq_len)
     """
-    logits = torch.matmul(query, key.transpose(-1, -2))/(key.shape[-1]**(-.5))
+    logits = torch.matmul(query, key.transpose(-1, -2))/(key.shape[-1]**.5)
+    if bias:
+        logits += bias
     if mask is not None:
-        logits = logits.masked_fill(mask==0, -1e9)  # NOT 1e-9. Softmax(1e-9) is still 1.
+        logits = logits.masked_fill(mask == 0, -1e9)  # NOT 1e-9. Softmax(1e-9) is still 1.
     scores = F.softmax(logits, dim=-1)
     if dp is not None:
         scores = dp(scores)
@@ -178,7 +189,14 @@ class MultiHeadSelfAttention(nn.Module):
 
         self.d_k = hidden_size // heads
         self.heads = heads
-        self.Linears = nn.ModuleList([nn.Linear(hidden_size, hidden_size) for _ in range(4)])
+        self.Linears = nn.ModuleList([nn.Linear(hidden_size, hidden_size, bias=False) for _ in range(4)])
+        for Lin in self.Linears:
+            nn.init.xavier_uniform_(Lin.weight)
+
+        bias = torch.empty(1)
+        nn.init.constant_(bias, 0)
+        self.bias = nn.Parameter(bias)
+
         self.attn = None
         self.dropout = nn.Dropout(p=drop_prob)
 
@@ -198,9 +216,9 @@ class MultiHeadSelfAttention(nn.Module):
         # Get the Q, K, V in multiple-heads form after linear layers
         q, k, v = [l(x).view(batch_size, -1, self.heads, self.d_k).transpose(1, 2)
                    for l, x in zip(self.Linears, (q, k, v))]
-        o, self.attn = self_attention(q, k, v, mask, self.dropout)  # (batch_size, heads, seq_len, d_k)
+        o, self.attn = self_attention(q, k, v, mask, self.bias, self.dropout)  # (batch_size, heads, seq_len, d_k)
         o = o.transpose(1, 2).contiguous().view(batch_size, -1, self.heads*self.d_k)
-
+        # return o
         return self.Linears[-1](o)
 
 
@@ -219,6 +237,10 @@ class FeedForward(nn.Module):
             nn.Dropout(p=drop_prob),
             nn.Linear(inter_size, output_size)
         )
+        nn.init.kaiming_normal_(self.FF[0].weight, nonlinearity='relu')  # Since there is ReLU after, use Kaiming
+        nn.init.constant_(self.FF[0].bias, 0.)
+        nn.init.xavier_uniform_(self.FF[3].weight)  # Xavier if no activation
+        nn.init.constant_(self.FF[3].bias, 0.)
 
     def forward(self, x):
         return self.FF(x)
@@ -269,14 +291,25 @@ class TransformerEncoder(nn.Module):
         """
         super(TransformerEncoder, self).__init__()
         self.PE = PositionalEncodings(input_size, drop_prob)
-        self.convs = nn.ModuleList([nn.Conv1d(input_size, input_size, 7, padding=3) for _ in range(num_conv)])
+
+        self.convs = nn.ModuleList([nn.Sequential(nn.Conv1d(input_size, input_size, 7, padding=3), nn.ReLU())
+                                    for _ in range(num_conv)])
+        for conv in self.convs:
+            nn.init.kaiming_normal_(conv[0].weight, nonlinearity='relu')  # Kaiming since ReLU
+            nn.init.constant_(conv[0].bias, 0.)  # Use zero-init biases
+
         self.MHSA = MultiHeadSelfAttention(heads, input_size, drop_prob)
+
         self.FF = FeedForward(input_size, output_size, inter_size, drop_prob)
+
         self.layers = nn.ModuleList([Sublayer(input_size, drop_prob) for _ in range(2 + num_conv)])
-        self.morph = nn.Linear(input_size, output_size) if input_size != output_size else None  # match in/output shapes
-        for p in self.parameters():  # This is important in the paper
-            if p.dim() > 1:
-                nn.init.xavier_uniform_(p)
+
+        if input_size != output_size:  # match in/output shapes
+            self.morph = nn.Linear(input_size, output_size)
+            nn.init.xavier_uniform_(self.morph.weight)
+            nn.init.constant_(self.morph.bias, 0.)
+        else:
+            self.morph = None
 
     def forward(self, x, masks):
         """
@@ -495,7 +528,11 @@ class QAOutput(nn.Module):
     def __init__(self, input_size):
         super(QAOutput, self).__init__()
         self.startFF = nn.Linear(input_size, 1)
+        nn.init.xavier_uniform_(self.startFF.weight)
+        nn.init.constant_(self.startFF.bias, 0.)
         self.endFF = nn.Linear(input_size, 1)
+        nn.init.xavier_uniform_(self.endFF.weight)
+        nn.init.constant_(self.endFF.bias, 0.)
 
     def forward(self, start, end, mask):
         logits_1 = self.startFF(start)

@@ -68,14 +68,6 @@ def get_setup_args():
                         type=lambda s: s.lower().startswith('t'),
                         default=True,
                         help='Process examples from the test set')
-    parser.add_argument('--para_limit',
-                        type=int,
-                        default=400,
-                        help='Max number of words in a paragraph')
-    parser.add_argument('--ques_limit',
-                        type=int,
-                        default=50,
-                        help='Max number of words to keep from a question')
 
     args = parser.parse_args()
 
@@ -201,6 +193,14 @@ def add_common_args(parser):
                         type=int,
                         default=16,
                         help='Max number of chars to keep from a word')
+    parser.add_argument('--para_limit',
+                        type=int,
+                        default=400,
+                        help='Max number of words in a paragraph')
+    parser.add_argument('--ques_limit',
+                        type=int,
+                        default=50,
+                        help='Max number of words to keep from a question')
 
 
 def add_train_test_args(parser):

@@ -13,10 +13,12 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as sched
 import torch.utils.data as data
 import util
+import math
 
 from args import get_train_args
 from collections import OrderedDict
 from json import dumps
+# from QANet import QANet
 from models import BiDAF
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
@@ -42,12 +44,13 @@ def main(args):
 
     # Get embeddings
     log.info('Loading embeddings...')
-    vectors = util.torch_from_json(args.char_emb_file if args.use_char else args.word_emb_file)
+    # word_vectors = util.torch_from_json(args.word_emb_file)
+    char_vectors = util.torch_from_json(args.char_emb_file)
 
     # Get model
     log.info('Building model...')
 
-    model = BiDAF(vectors=vectors,
+    model = BiDAF(vectors=char_vectors,
                   hidden_size=args.hidden_size,
                   drop_prob=args.drop_prob,
                   use_char=args.use_char,
@@ -56,6 +59,8 @@ def main(args):
                   inter_size=args.inter_size,
                   heads=args.heads,
                   use_GRU=args.use_GRU)
+    # model = QANet(word_vectors, char_vectors,
+    #       args.para_limit, args.ques_limit, args.hidden_size, train_cemb=args.use_char, num_head=args.heads)
 
     model = nn.DataParallel(model, args.gpu_ids)
     if args.load_path:
@@ -75,15 +80,17 @@ def main(args):
                                  log=log)
 
     # Get optimizer and scheduler
-    optimizer = optim.Adadelta(model.parameters(), args.lr,
-                               weight_decay=args.l2_wd)
+    # optimizer = optim.Adadelta(model.parameters(), args.lr,
+    #                            weight_decay=args.l2_wd)
 
     # The scheduler MULTIPLIES the base LR, NOT replaces
-    # optimizer = optim.Adam(model.parameters(), 1., betas=(.9, .98), eps=1e-9)
-    scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
+    optimizer = optim.Adam(model.parameters(), 1., betas=(.9, .98), eps=1e-9)
+    # scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
+    scheduler = sched.LambdaLR(optimizer, lambda s: 0.001*math.log(s + 1)/math.log(1000 - 1)
+                               if s < 1000 else 0.001)  # Chute (must use math.log, else TypeError)
     # scheduler = sched.LambdaLR(optimizer, lambda s: (args.hidden_size**(-.5)) *
     #                            min((s+1e-9)**(-.5), s*(4000**(-1.5)))
-    #                            )  # From Vaswani et. al 2017. If fails, try Chute's
+    #                            )  # From Vaswani et. al 2017
 
     # Get data loader
     log.info('Building dataset...')
@@ -126,6 +133,7 @@ def main(args):
 
                 # Forward
                 log_p1, log_p2 = model(c_idxs, q_idxs)
+                # log_p1, log_p2 = model(cw_idxs, cc_idxs, qw_idxs, qc_idxs)
 
                 y1, y2 = y1.to(device), y2.to(device)
                 loss = F.nll_loss(log_p1, y1) + F.nll_loss(log_p2, y2)
@@ -206,6 +214,7 @@ def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2, use_c
             c_idxs, q_idxs = (cw_idxs, cc_idxs), (qw_idxs, qc_idxs)
 
             # Forward
+            # log_p1, log_p2 = model(cw_idxs, cc_idxs, qw_idxs, qc_idxs)
             log_p1, log_p2 = model(c_idxs, q_idxs)
 
             y1, y2 = y1.to(device), y2.to(device)
