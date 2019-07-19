@@ -18,7 +18,7 @@ import math
 from args import get_train_args
 from collections import OrderedDict
 from json import dumps
-# from QANet import QANet
+
 from models import BiDAF
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
@@ -44,23 +44,20 @@ def main(args):
 
     # Get embeddings
     log.info('Loading embeddings...')
-    # word_vectors = util.torch_from_json(args.word_emb_file)
+    word_vectors = util.torch_from_json(args.word_emb_file)
     char_vectors = util.torch_from_json(args.char_emb_file)
 
     # Get model
     log.info('Building model...')
 
-    model = BiDAF(vectors=char_vectors,
+    model = BiDAF(vectors=(word_vectors, char_vectors),
                   hidden_size=args.hidden_size,
                   drop_prob=args.drop_prob,
-                  use_char=args.use_char,
                   char_limit=args.char_limit,
                   use_transformer=args.use_transformer,
                   inter_size=args.inter_size,
                   heads=args.heads,
                   use_GRU=args.use_GRU)
-    # model = QANet(word_vectors, char_vectors,
-    #       args.para_limit, args.ques_limit, args.hidden_size, train_cemb=args.use_char, num_head=args.heads)
 
     model = nn.DataParallel(model, args.gpu_ids)
     if args.load_path:
@@ -84,8 +81,8 @@ def main(args):
     #                            weight_decay=args.l2_wd)
 
     # The scheduler MULTIPLIES the base LR, NOT replaces
-    optimizer = optim.Adam(model.parameters(), 1., betas=(.9, .98), eps=1e-9)
-    # scheduler = sched.LambdaLR(optimizer, lambda s: 1.)  # Constant LR
+    optimizer = optim.Adam(model.parameters(), 1., betas=(.9, .98), eps=1e-9, weight_decay=args.l2_wd)
+
     scheduler = sched.LambdaLR(optimizer, lambda s: 0.001*math.log(s + 1)/math.log(1000 - 1)
                                if s < 1000 else 0.001)  # Chute (must use math.log, else TypeError)
     # scheduler = sched.LambdaLR(optimizer, lambda s: (args.hidden_size**(-.5)) *
@@ -122,10 +119,8 @@ def main(args):
                 optimizer.zero_grad()
                 batch_size = cw_idxs.size(0)
 
-                if args.use_char:
-                    cc_idxs = cc_idxs.to(device)  # (batch, c_limit, char_limit)
-                    qc_idxs = qc_idxs.to(device)
-
+                cc_idxs = cc_idxs.to(device)  # (batch, c_limit, char_limit)
+                qc_idxs = qc_idxs.to(device)
                 cw_idxs = cw_idxs.to(device)  # (batch, c_limit)
                 qw_idxs = qw_idxs.to(device)
 
@@ -133,7 +128,6 @@ def main(args):
 
                 # Forward
                 log_p1, log_p2 = model(c_idxs, q_idxs)
-                # log_p1, log_p2 = model(cw_idxs, cc_idxs, qw_idxs, qc_idxs)
 
                 y1, y2 = y1.to(device), y2.to(device)
                 loss = F.nll_loss(log_p1, y1) + F.nll_loss(log_p2, y2)
@@ -166,8 +160,8 @@ def main(args):
                     results, pred_dict = evaluate(model, dev_loader, device,
                                                   args.dev_eval_file,
                                                   args.max_ans_len,
-                                                  args.use_squad_v2,
-                                                  args.use_char)
+                                                  args.use_squad_v2
+                                                  )
                     saver.save(step, model, results[args.metric_name], device)
                     ema.resume(model)
 
@@ -188,7 +182,7 @@ def main(args):
                                    num_visuals=args.num_visuals)
 
 
-def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2, use_char):
+def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2):
     nll_meter = util.AverageMeter()
 
     model.eval()
@@ -204,17 +198,14 @@ def evaluate(model, data_loader, device, eval_file, max_len, use_squad_v2, use_c
             qw_idxs = qw_idxs.to(device)
             batch_size = cw_idxs.size(0)
 
-            if use_char:
-                cc_idxs = cc_idxs.to(device)  # (batch, cont_len, char_limit)
-                qc_idxs = qc_idxs.to(device)
-
+            cc_idxs = cc_idxs.to(device)  # (batch, cont_len, char_limit)
+            qc_idxs = qc_idxs.to(device)
             cw_idxs = cw_idxs.to(device)  # (batch, cont_len)
             qw_idxs = qw_idxs.to(device)
 
             c_idxs, q_idxs = (cw_idxs, cc_idxs), (qw_idxs, qc_idxs)
 
             # Forward
-            # log_p1, log_p2 = model(cw_idxs, cc_idxs, qw_idxs, qc_idxs)
             log_p1, log_p2 = model(c_idxs, q_idxs)
 
             y1, y2 = y1.to(device), y2.to(device)

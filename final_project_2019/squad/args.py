@@ -248,9 +248,6 @@ def add_train_test_args(parser):
                         type=str,
                         default=None,
                         help='Path to load as a model checkpoint.')
-    parser.add_argument('--use_char',
-                        action='store_true',
-                        help='To use character embeddings to get word embeddings or not.')
     parser.add_argument('--use_transformer',
                         action='store_true',
                         help='To use Transformer Encoders or not.')

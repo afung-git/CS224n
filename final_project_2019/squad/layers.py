@@ -10,8 +10,39 @@ import torch.nn.functional as F
 import numpy as np
 from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 from util import masked_softmax
-from cnn import CNN
 import math
+
+
+class InitializedLayer(nn.Module):
+    def __init__(self, input_size, output_size, kernel=None, act=False, bias=False, use_dsc=False):
+        """
+        Module for Linear, Convolution, or Depthwise Separable Convolution (Chollet: https://arxiv.org/abs/1610.02357)
+        Includes initialization depending on activation
+        :param input_size: Input dimension
+        :param output_size: Output dimension
+        :param kernel: Convolution kernel size
+        :param act: To use ReLU or not
+        :param bias: To add bias or not (For DSC, only the pointwise)
+        :param use_dsc: To use DSC or not
+        """
+        super(InitializedLayer, self).__init__()
+        self.act = act
+
+        self.ff = nn.Conv1d(input_size, output_size, kernel_size=kernel, padding=kernel//2, bias=bias) \
+            if kernel and not use_dsc \
+            else nn.Sequential(nn.Conv1d(input_size, input_size, kernel, padding=kernel//2, groups=input_size),
+            nn.Conv1d(input_size, output_size, 1, bias=bias)) if kernel and use_dsc \
+            else nn.Linear(input_size, output_size, bias=bias)
+
+        def weight_init(x):
+            nn.init.kaiming_normal_(x, nonlinearity='relu') if act else nn.init.xavier_uniform_(x)
+
+        [weight_init(ff.weight) for ff in self.ff] if use_dsc else weight_init(self.ff.weight)
+
+        nn.init.constant_((self.ff[1].bias if use_dsc else self.ff.bias), 0.) if bias else None
+
+    def forward(self, x):
+        return F.relu(self.ff(x)) if self.act else self.ff(x)
 
 
 class Embedding(nn.Module):
@@ -21,46 +52,39 @@ class Embedding(nn.Module):
     (see `HighwayEncoder` class for details).
 
     Args:
-        word_vectors (torch.Tensor): Pre-trained word vectors.
+        vectors (torch.Tensor): Pre-trained word & char vectors.
         hidden_size (int): Size of hidden activations.
         drop_prob (float): Probability of zero-ing out activations
+        char_limit (int): Maximum limit of characters per word
     """
-    def __init__(self, vectors, hidden_size, drop_prob):
+    def __init__(self, vectors, hidden_size, drop_prob, char_limit):
         super(Embedding, self).__init__()
         self.drop_prob = drop_prob
-        self.embed = nn.Embedding.from_pretrained(vectors)
-        self.proj = nn.Linear(vectors.size(1), hidden_size, bias=False)
+        word_vectors, char_vectors = vectors
+        self.char_embed = nn.Embedding.from_pretrained(char_vectors)
+        self.char2word = nn.Sequential(
+            InitializedLayer(char_vectors.shape[1], word_vectors.shape[1], 5, act=True, bias=True),
+            nn.MaxPool1d(char_limit - 5 + 1)
+        )
+        self.word_embed = nn.Embedding.from_pretrained(word_vectors)
+        self.proj = InitializedLayer(2*word_vectors.size(1), hidden_size, bias=False)
         self.hwy = HighwayEncoder(2, hidden_size)
 
     def forward(self, x):
-        emb = self.embed(x)   # (batch_size, seq_len, embed_size)
+        x_w, x_c = x
+        w_emb = self.word_embed(x_w)  # (batch_size, seq_len, w_embed_size)
+
+        c_emb = self.char_embed(x_c)  # (batch_size*seq_len, char_limit, c_embed_size)
+        c_emb = c_emb.transpose(1, 2)  # (batch_size*seq_len, c_embed_size, char_limit)
+        c2w_emb = self.char2word(c_emb)  # (batch_size*seq_len, w_embed_size)
+        c2w_emb = c2w_emb.reshape_as(w_emb)  # (batch_size, seq_len, w_embed_size)
+
+        emb = torch.cat((w_emb, c2w_emb), dim=-1)  # (batch_size, seq_len, 2*w_embed_size)
         emb = F.dropout(emb, self.drop_prob, self.training)
+
         emb = self.proj(emb)  # (batch_size, seq_len, hidden_size)
         emb = self.hwy(emb)   # (batch_size, seq_len, hidden_size)
 
-        return emb
-
-
-class Char2WordEmbedding(Embedding):
-    """
-    Assignment 5's Character to Word Embeddings
-    A 1D Conv followed by Highway Network refines the output word embeddings
-    Args:
-        vectors (torch.Tensor): Pre-trained char vectors
-        hidden_size (int): Output word vector size.
-        drop_prob (float): Probability of zero-ing out activations
-
-    """
-    def __init__(self, vectors, hidden_size, drop_prob, char_limit, kernel_width=5):
-        super(Char2WordEmbedding, self).__init__(vectors, hidden_size, drop_prob)
-        self.proj = CNN(vectors.shape[1], hidden_size, char_limit, kernel_width)
-
-    def forward(self, x):
-        emb = self.embed(x)   # (batch_size*seq_len, char_limit, char_size)
-        emb = F.dropout(emb, self.drop_prob, self.training)
-        emb = emb.transpose(1, 2)  # (batch_size*len, char_size, char_limit)
-        emb = self.proj(emb)  # (batch_size*seq_len, word_size)
-        emb = self.hwy(emb)   # (batch_size*seq_len, word_size)
         return emb
 
 
@@ -78,24 +102,16 @@ class HighwayEncoder(nn.Module):
     """
     def __init__(self, num_layers, hidden_size):
         super(HighwayEncoder, self).__init__()
-        self.transforms = nn.ModuleList([nn.Linear(hidden_size, hidden_size)
+        self.transforms = nn.ModuleList([InitializedLayer(hidden_size, hidden_size, act=True, bias=True)
                                          for _ in range(num_layers)])
-        self.gates = nn.ModuleList([nn.Linear(hidden_size, hidden_size)
-                                    for _ in range(num_layers)])
-
-        for g in self.gates:
-            nn.init.kaiming_normal_(g.weight, nonlinearity='relu')
-            nn.init.constant_(g.bias, 0.)
-
-        for t in self.transforms:
-            nn.init.kaiming_normal_(t.weight, nonlinearity='relu')
-            nn.init.constant_(t.bias, 0.)
+        self.gates = nn.ModuleList([InitializedLayer(hidden_size, hidden_size, bias=True)
+                                    for _ in range(num_layers)])  # TODO: use xavier init? sigmoid comes after
 
     def forward(self, x):
         for gate, transform in zip(self.gates, self.transforms):
             # Shapes of g, t, and x are all (batch_size, seq_len, hidden_size)
             g = torch.sigmoid(gate(x))
-            t = F.relu(transform(x))
+            t = transform(x)
             x = g * t + (1 - g) * x
 
         return x
@@ -189,13 +205,9 @@ class MultiHeadSelfAttention(nn.Module):
 
         self.d_k = hidden_size // heads
         self.heads = heads
-        self.Linears = nn.ModuleList([nn.Linear(hidden_size, hidden_size, bias=False) for _ in range(4)])
-        for Lin in self.Linears:
-            nn.init.xavier_uniform_(Lin.weight)
+        self.Linears = nn.ModuleList([InitializedLayer(hidden_size, hidden_size) for _ in range(4)])
 
-        bias = torch.empty(1)
-        nn.init.constant_(bias, 0)
-        self.bias = nn.Parameter(bias)
+        self.bias = nn.Parameter(torch.zeros(1))
 
         self.attn = None
         self.dropout = nn.Dropout(p=drop_prob)
@@ -218,7 +230,7 @@ class MultiHeadSelfAttention(nn.Module):
                    for l, x in zip(self.Linears, (q, k, v))]
         o, self.attn = self_attention(q, k, v, mask, self.bias, self.dropout)  # (batch_size, heads, seq_len, d_k)
         o = o.transpose(1, 2).contiguous().view(batch_size, -1, self.heads*self.d_k)
-        # return o
+
         return self.Linears[-1](o)
 
 
@@ -232,15 +244,10 @@ class FeedForward(nn.Module):
         """
         super(FeedForward, self).__init__()
         self.FF = nn.Sequential(
-            nn.Linear(input_size, inter_size),
-            nn.ReLU(),
+            InitializedLayer(input_size, inter_size, act=True, bias=True),
             nn.Dropout(p=drop_prob),
-            nn.Linear(inter_size, output_size)
+            InitializedLayer(inter_size, output_size, bias=True)
         )
-        nn.init.kaiming_normal_(self.FF[0].weight, nonlinearity='relu')  # Since there is ReLU after, use Kaiming
-        nn.init.constant_(self.FF[0].bias, 0.)
-        nn.init.xavier_uniform_(self.FF[3].weight)  # Xavier if no activation
-        nn.init.constant_(self.FF[3].bias, 0.)
 
     def forward(self, x):
         return self.FF(x)
@@ -260,7 +267,7 @@ class Sublayer(nn.Module):
         """
         :param x: Input (batch x seq_len x hidden_size)
         :param sub: Sublayer (Feedforward, MultiHeadSelfAttention etc.)
-        :param: swap: Flag to transpose layers (especially for conv)
+        :param swap: Flag to transpose layers (especially for conv)
         :return: Normalize, Sublayer, Dropout
         """
         return self.dropout(sub(self.norm(x).transpose(1, 2)).transpose(1, 2) if swap else
@@ -292,11 +299,8 @@ class TransformerEncoder(nn.Module):
         super(TransformerEncoder, self).__init__()
         self.PE = PositionalEncodings(input_size, drop_prob)
 
-        self.convs = nn.ModuleList([nn.Sequential(nn.Conv1d(input_size, input_size, 7, padding=3), nn.ReLU())
+        self.convs = nn.ModuleList([InitializedLayer(input_size, input_size, 7, act=True, bias=True)
                                     for _ in range(num_conv)])
-        for conv in self.convs:
-            nn.init.kaiming_normal_(conv[0].weight, nonlinearity='relu')  # Kaiming since ReLU
-            nn.init.constant_(conv[0].bias, 0.)  # Use zero-init biases
 
         self.MHSA = MultiHeadSelfAttention(heads, input_size, drop_prob)
 
@@ -304,12 +308,8 @@ class TransformerEncoder(nn.Module):
 
         self.layers = nn.ModuleList([Sublayer(input_size, drop_prob) for _ in range(2 + num_conv)])
 
-        if input_size != output_size:  # match in/output shapes
-            self.morph = nn.Linear(input_size, output_size)
-            nn.init.xavier_uniform_(self.morph.weight)
-            nn.init.constant_(self.morph.bias, 0.)
-        else:
-            self.morph = None
+        # match in/output shapes
+        self.morph = InitializedLayer(input_size, output_size, bias=True) if input_size != output_size else None
 
     def forward(self, x, masks):
         """
@@ -387,9 +387,9 @@ def QAModel(modelstack, x, mask):
     """
     Perform QANet modelling
     :param modelstack: Transformer Encoder Stack
-    :param x: Input tensor (B x L x 4H) from BiDAF Attention
+    :param x: Input tensor (B x L x H) from BiDAF Attention
     :param mask: Mask for pads
-    :return: start=[M1, M2], end=[M1, M3] (B x L x 8H)
+    :return: start=[M1, M2], end=[M1, M3] (B x L x 2H)
     """
     M1 = modelstack(x, mask)
     M2 = modelstack(M1, mask)
@@ -527,12 +527,8 @@ class QAOutput(nn.Module):
     """
     def __init__(self, input_size):
         super(QAOutput, self).__init__()
-        self.startFF = nn.Linear(input_size, 1)
-        nn.init.xavier_uniform_(self.startFF.weight)
-        nn.init.constant_(self.startFF.bias, 0.)
-        self.endFF = nn.Linear(input_size, 1)
-        nn.init.xavier_uniform_(self.endFF.weight)
-        nn.init.constant_(self.endFF.bias, 0.)
+        self.startFF = InitializedLayer(input_size, 1, bias=True)
+        self.endFF = InitializedLayer(input_size, 1, bias=True)
 
     def forward(self, start, end, mask):
         logits_1 = self.startFF(start)
