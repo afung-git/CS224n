@@ -101,6 +101,10 @@ def get_train_args():
                         type=float,
                         default=0.1,
                         help='Probability of zeroing an activation in dropout layers.')
+    parser.add_argument('--p_sdd',
+                        type=float,
+                        default=0.9,
+                        help='Stochastic Depth Dropout Probability')
     parser.add_argument('--metric_name',
                         type=str,
                         default='F1',
@@ -232,14 +236,37 @@ def add_train_test_args(parser):
                         default=True,
                         help='Whether to use SQuAD 2.0 (unanswerable) questions.')
     parser.add_argument('--hidden_size',
-                        default=104,
+                        type=int,
+                        default=128,
                         help='Number of features in encoder hidden layers.')
     parser.add_argument('--inter_size',
-                        default=416,
+                        type=int,
+                        default=512,
                         help='Number of features in feed-forward layers.')
+    parser.add_argument('--c2w_size',
+                        type=int,
+                        default=100,
+                        help='Size of char-converted word embeddings')
     parser.add_argument('--heads',
                         default=8,
+                        type=int,
                         help='Number of heads in Multi-Head Self-Attention.')
+    parser.add_argument('--enc_blocks',
+                        default=1,
+                        type=int,
+                        help='Number of transformer blocks in encoder stack.')
+    parser.add_argument('--enc_convs',
+                        default=4,
+                        type=int,
+                        help='Number of convolution layers in each encoder transformer block.')
+    parser.add_argument('--mod_blocks',
+                        default=7,
+                        type=int,
+                        help='Number of transformer blocks in modelling stack.')
+    parser.add_argument('--mod_convs',
+                        default=2,
+                        type=int,
+                        help='Number of convolution layers in each modelling transformer block.')
     parser.add_argument('--num_visuals',
                         type=int,
                         default=10,

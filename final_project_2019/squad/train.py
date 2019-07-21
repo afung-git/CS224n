@@ -12,18 +12,18 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.optim.lr_scheduler as sched
 import torch.utils.data as data
-from . import util
+import util
 import math
 
-from .args import get_train_args
+from args import get_train_args
 from collections import OrderedDict
 from json import dumps
 
-from .models import BiDAF
+from models import BiDAF
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
 from ujson import load as json_load
-from .util import collate_fn, SQuAD
+from util import collate_fn, SQuAD
 
 
 def main(args):
@@ -53,16 +53,22 @@ def main(args):
     model = BiDAF(vectors=(word_vectors, char_vectors),
                   hidden_size=args.hidden_size,
                   drop_prob=args.drop_prob,
+                  p_sdd=args.p_sdd,
                   char_limit=args.char_limit,
                   use_transformer=args.use_transformer,
                   inter_size=args.inter_size,
                   heads=args.heads,
+                  c2w_size=args.c2w_size,
+                  enc_blocks=args.enc_blocks,
+                  enc_convs=args.enc_convs,
+                  mod_blocks=args.mod_blocks,
+                  mod_convs=args.mod_convs,
                   use_GRU=args.use_GRU)
 
     model = nn.DataParallel(model, args.gpu_ids)
     if args.load_path:
         log.info('Loading checkpoint from {}...'.format(args.load_path))
-        model, step = util.load_model(model, args.load_path, args.gpu_ids)
+        model, step = util.load_model(model, args.load_path, args.gpu_ids)  # uses the saved step num
     else:
         step = 0
     model = model.to(device)
