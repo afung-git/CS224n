@@ -298,7 +298,7 @@ class TransformerEncoder(nn.Module):
         """
         super(TransformerEncoder, self).__init__()
         self.p_sdd = p_sdd
-        self.PE = PositionalEncodings(input_size, drop_prob)
+        self.PE = PositionalEncodings(drop_prob)
         self.convs = nn.ModuleList([InitializedLayer(input_size, input_size, 7, act=F.relu, bias=True, use_dsc=True)
                                     for _ in range(num_conv)])
         self.MHSA = MultiHeadSelfAttention(heads, input_size, drop_prob)
@@ -324,7 +324,7 @@ class TransformerEncoder(nn.Module):
             b = torch.bernoulli(torch.tensor(p)) == 0
             return x if b else x + l(*args)
         else:
-            return x
+            return x + l(*args)
 
     def forward(self, x, masks):
         """
@@ -345,28 +345,25 @@ class TransformerEncoder(nn.Module):
 
 
 class PositionalEncodings(nn.Module):
-    def __init__(self, d, drop_prob=.1, max_len=5000):
+    def __init__(self, drop_prob=.1):
         """
-        :param d: Dimension of embedding
         :param drop_prob: Dropout Rate
-        :param max_len: Maximum length of a sequence
         """
         super(PositionalEncodings, self).__init__()
         self.dropout = nn.Dropout(p=drop_prob)
-
-        PE = torch.zeros((max_len, d))  # (L, d)
-        pos = torch.arange(max_len, dtype=torch.float32).unsqueeze(1)  # (L, 1)
-        div = torch.exp(torch.arange(0., d, 2)/d*math.log(1e4))  # (d/2)
-        PE[:, ::2] = torch.sin(pos/div)  # (L, d/2)
-        PE[:, 1::2] = torch.cos(pos/div)  # (L, d/2)
-        self.register_buffer('PE', PE)  # (L, d)
 
     def forward(self, x):
         """
         :param x: Input (batch, seq_len, d)
         :return: x + PE
         """
-        return self.dropout(x + self.PE[:x.shape[1]])  # You added the same PE sinusoid to all positions
+        l, d = x.shape[1:]
+        PE = torch.zeros((l, d))  # (L, d)
+        pos = torch.arange(l, dtype=torch.float32).unsqueeze(1)  # (L, 1)
+        div = torch.exp(torch.arange(0., d, 2)/d*math.log(1e4))  # (d/2)
+        PE[:, ::2] = torch.sin(pos/div)  # (L, d/2)
+        PE[:, 1::2] = torch.cos(pos/div)  # (L, d/2)
+        return self.dropout(x + PE.to(x.get_device()))  # You added the same PE sinusoid to all positions
 
 
 class TransformerEncoderStack(nn.Module):
